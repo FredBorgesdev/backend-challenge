@@ -1,0 +1,75 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: wagering-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-jungle}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-jungle_secret}
+      POSTGRES_DB: ${DB_NAME:-wagering_db}
+    ports:
+      - "${DB_PORT:-5433}:5432"
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "deadlock_timeout=200ms"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-jungle} -d ${DB_NAME:-wagering_db}"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  localstack:
+    image: localstack/localstack:3.7
+    container_name: wagering-localstack
+    restart: unless-stopped
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: us-east-1
+      EAGER_SERVICE_LOADING: 1
+    volumes:
+      - ./docker/localstack/init-sqs.sh:/etc/localstack/init/ready.d/init-sqs.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name wager-transactions.fifo >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wagering-app
+    profiles: ["full"]
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      PORT: 3000
+      NODE_ENV: production
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-jungle}
+      DB_PASSWORD: ${DB_PASSWORD:-jungle_secret}
+      DB_NAME: ${DB_NAME:-wagering_db}
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: http://localstack:4566
+      SQS_WAGER_QUEUE_NAME: wager-transactions.fifo
+      SQS_WAGER_DLQ_NAME: wager-transactions-dlq.fifo
+      SQS_INTEGRATION_EVENTS_QUEUE_NAME: integration-events.fifo
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+
+volumes:
+  pgdata:
